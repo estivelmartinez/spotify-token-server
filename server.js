@@ -7,11 +7,11 @@ const app = express();
 
 app.use(cors());
 
-// 1. Keep your existing Token Endpoint
-app.get("/token", async (req, res) => {
+// 1. Existing Token Endpoint (Keep this!)
+app.get("/token", async (request, response) => {
   const authString = Buffer.from(process.env.SPOTIFY_ID + ":" + process.env.SPOTIFY_SECRET).toString("base64");
   try {
-    const response = await fetch("https://accounts.spotify.com/api/token", {
+    const spotifyResponse = await fetch("https://accounts.spotify.com/api/token", {
       method: "POST",
       headers: {
         "Authorization": "Basic " + authString,
@@ -19,46 +19,49 @@ app.get("/token", async (req, res) => {
       },
       body: "grant_type=client_credentials"
     });
-    const data = await response.json();
-    res.json(data);
+    const data = await spotifyResponse.json();
+    response.json(data);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    response.status(500).json({ error: error.message });
   }
 });
 
-// 2. NEW: Scraper Endpoint for BPM & Key
+// 2. NEW: Scraper Endpoint
 app.get("/scrape", async (req, res) => {
-  const { artist, title } = req.query;
-  if (!artist || !title) return res.status(400).json({ error: "Missing artist or title" });
+  const { title, artist } = req.query;
+  
+  if (!title || !artist) {
+    return res.status(400).json({ error: "Missing title or artist" });
+  }
 
   try {
-    // Search MusicStax
-    const query = encodeURIComponent(`${artist} ${title}`);
-    const searchUrl = `https://musicstax.com/search?q=${query}`;
-    
+    // A. Construct the Search URL for GetSongBPM
+    const query = `${title} ${artist}`.replace(/ /g, "+").replace(/[^\w\+]/g, "");
+    const searchUrl = `https://getsongbpm.com/search?q=${query}`;
+
+    // B. Fetch the HTML
     const { data: html } = await axios.get(searchUrl, {
-      headers: { 
-        // Pretend to be a real browser to avoid being blocked
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36' 
-      }
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36' }
     });
 
+    // C. Parse with Cheerio
     const $ = cheerio.load(html);
+    
+    // D. Extract the first result's BPM and Key
+    // (Note: These selectors are specific to GetSongBPM's current layout)
+    const bpmText = $(".bpm").first().text().trim().replace(" BPM", "");
+    const keyText = $(".key").first().text().trim();
 
-    // Select the first result's BPM and Key (these classes are specific to MusicStax)
-    // Note: These selectors might change if the website updates!
-    const firstResult = $(".search-result-track").first();
-    const bpm = firstResult.find(".bpm-text").text().trim();
-    const key = firstResult.find(".key-text").text().trim();
-
-    if (bpm && key) {
-      res.json({ bpm: parseInt(bpm), key: key });
+    // Check if we found data
+    if (bpmText && keyText) {
+      res.json({ bpm: parseInt(bpmText), key: keyText });
     } else {
-      res.json({ bpm: null, key: null, error: "Not found" });
+      res.json({ bpm: null, key: null, note: "Not found on GetSongBPM" });
     }
+
   } catch (error) {
-    console.error("Scrape failed:", error.message);
-    res.status(500).json({ bpm: null, key: null, error: "Scraping failed" });
+    console.error("Scrape Error:", error.message);
+    res.json({ bpm: null, key: null, error: "Scraping failed" });
   }
 });
 

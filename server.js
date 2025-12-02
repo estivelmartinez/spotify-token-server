@@ -6,23 +6,12 @@ const app = express();
 
 app.use(cors());
 
-// --- ROUTE 1: Home Page (REQUIRED for GetSongBPM Verification) ---
+// 1. Home Page (Required for GetSongBPM Verification)
 app.get("/", (req, res) => {
-  res.send(`
-    <html>
-      <head><title>Music Data Project</title></head>
-      <body>
-        <h1>Music Data API</h1>
-        <p>
-           This educational project uses data provided by 
-           <a href="https://getsongbpm.com">GetSongBPM</a>.
-        </p>
-      </body>
-    </html>
-  `);
+  res.send('<h1>Music Data API</h1><p>Powered by <a href="https://getsongbpm.com">GetSongBPM</a></p>');
 });
 
-// --- ROUTE 2: Spotify Token (For Popularity/Explicit Data) ---
+// 2. Spotify Token Endpoint
 app.get("/token", async (req, res) => {
   const authString = Buffer.from(process.env.SPOTIFY_ID + ":" + process.env.SPOTIFY_SECRET).toString("base64");
   try {
@@ -41,17 +30,17 @@ app.get("/token", async (req, res) => {
   }
 });
 
-// --- ROUTE 3: GetSongBPM Proxy (For BPM & Key) ---
+// 3. GetSongBPM Endpoint (The logic you need now)
 app.get("/bpm", async (req, res) => {
   const { artist, title } = req.query;
-  const apiKey = process.env.GETSONGBPM_KEY;
+  const apiKey = process.env.GETSONGBPM_KEY; // <--- Reads the key you just saved
 
   if (!artist || !title) return res.status(400).json({ error: "Missing artist or title" });
-  if (!apiKey) return res.status(500).json({ error: "Server missing API Key" });
+  if (!apiKey) return res.status(500).json({ error: "Server configuration error: Missing API Key" });
 
   try {
-    const searchUrl = `https://api.getsongbpm.com/search/`;
-    const response = await axios.get(searchUrl, {
+    // Call the GetSongBPM API
+    const response = await axios.get(`https://api.getsongbpm.com/search/`, {
       params: {
         api_key: apiKey,
         type: 'both',
@@ -70,10 +59,10 @@ app.get("/bpm", async (req, res) => {
         artist: topMatch.artist.name
       });
     } else {
-      res.json({ bpm: null, key: null, error: "Song not found" });
+      res.json({ bpm: null, key: null, error: "Not found" });
     }
   } catch (error) {
-    console.error("GetSongBPM Error:", error.message);
+    console.error("GetSongBPM API Error:", error.message);
     res.json({ bpm: null, key: null, error: "API Error" });
   }
 });

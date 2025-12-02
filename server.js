@@ -30,21 +30,32 @@ app.get("/token", async (req, res) => {
   }
 });
 
-// 3. GetSongBPM Endpoint (The logic you need now)
+// ... (Previous code remains the same)
+
+// 3. GetSongBPM Endpoint
 app.get("/bpm", async (req, res) => {
   const { artist, title } = req.query;
-  const apiKey = process.env.GETSONGBPM_KEY; // <--- Reads the key you just saved
+  const apiKey = process.env.GETSONGBPM_KEY;
 
   if (!artist || !title) return res.status(400).json({ error: "Missing artist or title" });
-  if (!apiKey) return res.status(500).json({ error: "Server configuration error: Missing API Key" });
+  if (!apiKey) return res.status(500).json({ error: "Server missing API Key" });
 
   try {
-    // Call the GetSongBPM API
-    const response = await axios.get(`https://api.getsongbpm.com/search/`, {
+    // 1. URL from your dashboard screenshot
+    const searchUrl = `https://api.getsong.co/search/`; 
+    
+    // 2. Manually format the lookup string to ensure correct encoding
+    const lookupQuery = `song:${title} artist:${artist}`;
+
+    const response = await axios.get(searchUrl, {
       params: {
-        api_key: apiKey,
+        api_key: apiKey.trim(), // Remove accidental spaces
         type: 'both',
-        lookup: `song:${title} artist:${artist}`
+        lookup: lookupQuery
+      },
+      headers: {
+        // Pretend to be a browser to avoid being blocked
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
       }
     });
 
@@ -59,15 +70,17 @@ app.get("/bpm", async (req, res) => {
         artist: topMatch.artist.name
       });
     } else {
-      res.json({ bpm: null, key: null, error: "Not found" });
+      res.json({ bpm: null, key: null, error: "Song not found in database" });
     }
-  } catch (error) {
-    console.error("GetSongBPM API Error:", error.message);
-    res.json({ bpm: null, key: null, error: "API Error" });
-  }
-});
 
-const port = process.env.PORT || 3000;
-app.listen(port, () => {
-  console.log("Server running on port " + port);
+  } catch (error) {
+    console.error("GetSongBPM Error:", error.message);
+    // Log the full error to Render logs so you can debug
+    if (error.response) {
+      console.error("Response Body:", JSON.stringify(error.response.data));
+      res.json({ bpm: null, key: null, error: `API Error: ${error.response.status}` });
+    } else {
+      res.json({ bpm: null, key: null, error: "Network Error" });
+    }
+  }
 });

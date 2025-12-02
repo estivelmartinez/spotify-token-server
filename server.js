@@ -6,12 +6,24 @@ const app = express();
 
 app.use(cors());
 
-// 1. Home Page (Required for Verification)
+// Helper function to clean artist names
+// Turns "Morgan Wallen Featuring Tate McRae" -> "Morgan Wallen"
+function cleanArtist(artist) {
+  return artist.split(" Featuring")[0]
+               .split(" Feat")[0]
+               .split(" &")[0]
+               .split(" X ")[0]
+               .split(" x ")[0]
+               .split(" /")[0]
+               .trim();
+}
+
+// 1. Home Page
 app.get("/", (req, res) => {
   res.send('<h1>Music Data API</h1><p>Powered by <a href="https://getsongbpm.com">GetSongBPM</a></p>');
 });
 
-// 2. Spotify Token Endpoint (Keep this!)
+// 2. Spotify Token Endpoint
 app.get("/token", async (req, res) => {
   const authString = Buffer.from(process.env.SPOTIFY_ID + ":" + process.env.SPOTIFY_SECRET).toString("base64");
   try {
@@ -30,7 +42,7 @@ app.get("/token", async (req, res) => {
   }
 });
 
-// 3. GetSongBPM Endpoint (UPDATED WITH CORRECT URL)
+// 3. GetSongBPM Endpoint (SMART SEARCH)
 app.get("/bpm", async (req, res) => {
   const { artist, title } = req.query;
   const apiKey = process.env.GETSONGBPM_KEY;
@@ -39,33 +51,46 @@ app.get("/bpm", async (req, res) => {
   if (!apiKey) return res.status(500).json({ error: "Server missing API Key" });
 
   try {
-    // ✅ FIX 1: Use the correct Base URL from your dashboard
-    const searchUrl = `https://api.getsong.co/search/`; 
+    const baseUrl = `https://api.getsong.co/search/`;
+    const simpleArtist = cleanArtist(artist);
     
-    // ✅ FIX 2: Manually format the lookup string
-    const lookupQuery = `song:${title} artist:${artist}`;
-
-    const response = await axios.get(searchUrl, {
+    // ATTEMPT 1: Specific Search (Title + Clean Artist)
+    // We use the cleaned artist to increase chances of a match
+    let response = await axios.get(baseUrl, {
       params: {
         api_key: apiKey.trim(),
         type: 'both',
-        lookup: lookupQuery
+        lookup: `song:${title} artist:${simpleArtist}`
       },
-      headers: {
-        // ✅ FIX 3: Add a User-Agent so they don't block us as a "bot"
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-      }
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
     });
 
-    const searchResults = response.data.search;
-    
-    if (searchResults && searchResults.length > 0) {
-      const topMatch = searchResults[0];
+    let results = response.data.search;
+
+    // ATTEMPT 2: Fallback (Title Only)
+    // If strict search failed, search JUST the song title
+    if (!results || results.length === 0) {
+      console.log(`Strict search failed for ${title}. Trying title only...`);
+      response = await axios.get(baseUrl, {
+        params: {
+          api_key: apiKey.trim(),
+          type: 'song',  // Only search songs
+          lookup: title  // Just the title
+        },
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
+      });
+      results = response.data.search;
+    }
+
+    // Return the best result
+    if (results && results.length > 0) {
+      const topMatch = results[0];
       res.json({
         bpm: topMatch.tempo,
         key: topMatch.key_of,
         title: topMatch.song_title,
-        artist: topMatch.artist.name
+        artist: topMatch.artist.name,
+        note: "Success"
       });
     } else {
       res.json({ bpm: null, key: null, error: "Song not found in database" });
@@ -73,13 +98,10 @@ app.get("/bpm", async (req, res) => {
 
   } catch (error) {
     console.error("GetSongBPM Error:", error.message);
-    
-    // Forward the actual error from their API to your logs
     if (error.response) {
-      console.error("Response Data:", JSON.stringify(error.response.data));
-      res.json({ bpm: null, key: null, error: `API Error: ${error.response.status}` });
+       res.json({ bpm: null, key: null, error: `API Error: ${error.response.status}` });
     } else {
-      res.json({ bpm: null, key: null, error: "Network Error" });
+       res.json({ bpm: null, key: null, error: "Network Error" });
     }
   }
 });

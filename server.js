@@ -2,24 +2,46 @@ const express = require("express");
 const fetch = require("node-fetch");
 const cors = require("cors");
 const axios = require("axios");
-const cheerio = require("cheerio"); // We need this for Wikipedia
+const cheerio = require("cheerio");
 const app = express();
 
 app.use(cors());
 
 // --- HELPERS ---
-function cleanText(str) {
+
+// 1. Clean Artist: "Drake feat. Future" -> "Drake"
+function cleanArtist(artist) {
+  if (!artist) return "";
+  return artist.split(/\s+(feat\.?|featuring|&|x|with|vs\.?)\s+/i)[0].trim();
+}
+
+// 2. Clean Title: "Song (Live)" -> "Song"
+function cleanTitle(title) {
+  if (!title) return "";
+  return title.replace(/\s*[\(\[].*?[\)\]]/g, '').trim();
+}
+
+// 3. Clean Wikipedia Text: Remove quotes and [1] refs
+function cleanWikiText(str) {
   if (!str) return "";
-  // Remove quotes, references like [1], and trim
   return str.replace(/["']/g, "").replace(/\[.*?\]/g, "").trim();
 }
 
+// 4. Fuzzy Match: Check if strings are similar
+function isFuzzyMatch(str1, str2) {
+  const s1 = str1.toLowerCase().replace(/[^a-z0-9]/g, "");
+  const s2 = str2.toLowerCase().replace(/[^a-z0-9]/g, "");
+  return s1.includes(s2) || s2.includes(s1);
+}
+
+// --- ROUTES ---
+
 // 1. Home Page
 app.get("/", (req, res) => {
-  res.send('<h1>Music Data API</h1><p>Powered by GetSongBPM & Wikipedia</p>');
+  res.send('<h1>Music Data API</h1><p>Powered by <a href="https://getsongbpm.com">GetSongBPM</a> & Wikipedia</p>');
 });
 
-// 2. Spotify Token (Keep this!)
+// 2. Spotify Token
 app.get("/token", async (req, res) => {
   const authString = Buffer.from(process.env.SPOTIFY_ID + ":" + process.env.SPOTIFY_SECRET).toString("base64");
   try {
@@ -38,61 +60,28 @@ app.get("/token", async (req, res) => {
   }
 });
 
-// 3. GetSongBPM Endpoint (Keep this!)
-app.get("/bpm", async (req, res) => {
-  // ... (Paste your existing /bpm logic here from the previous step) ...
-  // (For brevity, I'm assuming you keep the Smart Search logic we built previously)
-  const { artist, title } = req.query;
-  const apiKey = process.env.GETSONGBPM_KEY;
-  if (!apiKey) return res.status(500).json({ error: "Missing API Key" });
-
-  try {
-    const searchUrl = `https://api.getsong.co/search/`;
-    const response = await axios.get(searchUrl, {
-      params: { api_key: apiKey.trim(), type: 'both', lookup: `song:${title} artist:${artist}` },
-      headers: { 'User-Agent': 'Mozilla/5.0' }
-    });
-    const results = response.data.search;
-    if (results && results.length > 0) {
-      res.json(results[0]);
-    } else {
-      res.json({ error: "Not found" });
-    }
-  } catch (e) {
-    res.json({ error: "API Error" });
-  }
-});
-
-// 4. NEW: Wikipedia Year-End Scraper
+// 3. Wikipedia Year-End Scraper
 app.get("/year-end", async (req, res) => {
   const year = req.query.year || "2024";
   const url = `https://en.wikipedia.org/wiki/Billboard_Year-End_Hot_100_singles_of_${year}`;
 
   try {
-    const { data: html } = await axios.get(url, {
-      headers: { 'User-Agent': 'Mozilla/5.0' }
-    });
-    
+    const { data: html } = await axios.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
     const $ = cheerio.load(html);
     const chartData = [];
 
-    // Find the standard wikitable
     $(".wikitable tr").each((i, row) => {
-      if (i === 0) return; // Skip header row
-
+      if (i === 0) return;
       const cols = $(row).find("td");
       if (cols.length >= 2) {
-        // Wikipedia columns are usually: [Rank] [Title] [Artist]
         let rank = $(row).find("th").text().trim() || $(cols[0]).text().trim();
-        let title = $(cols[0]).text().trim(); // Sometimes Rank is a 'th', sometimes 'td'
+        let title = $(cols[0]).text().trim();
         let artist = $(cols[1]).text().trim();
 
-        // If rank was in 'th', shift title/artist
         if ($(row).find("th").length > 0) {
            title = $(cols[0]).text().trim();
            artist = $(cols[1]).text().trim();
         } else {
-           // If no 'th', Rank is col 0, Title is col 1, Artist is col 2
            rank = $(cols[0]).text().trim();
            title = $(cols[1]).text().trim();
            artist = $(cols[2]).text().trim();
@@ -100,19 +89,64 @@ app.get("/year-end", async (req, res) => {
 
         if (title && artist) {
           chartData.push({
-            rank: parseInt(cleanText(rank)),
-            title: cleanText(title),
-            artist: cleanText(artist),
-            weeks_on_chart: 52 // Year-end charts don't track weeks, so we use a placeholder
+            rank: parseInt(cleanWikiText(rank)),
+            title: cleanWikiText(title),
+            artist: cleanWikiText(artist),
+            weeks_on_chart: 52 
           });
         }
       }
     });
-
     res.json({ year: year, data: chartData });
-
   } catch (error) {
     res.status(500).json({ error: "Failed to scrape Wikipedia", details: error.message });
+  }
+});
+
+// 4. SMART BPM Endpoint
+app.get("/bpm", async (req, res) => {
+  const { artist, title } = req.query;
+  const apiKey = process.env.GETSONGBPM_KEY;
+  if (!apiKey) return res.status(500).json({ error: "Server missing API Key" });
+
+  try {
+    const baseUrl = `https://api.getsong.co/search/`;
+    const simpleTitle = cleanTitle(title);
+    const simpleArtist = cleanArtist(artist);
+    
+    console.log(`Searching: "${simpleTitle}" by "${simpleArtist}"`);
+
+    // STRATEGY 1: Strict Search
+    let response = await axios.get(baseUrl, {
+      params: { api_key: apiKey.trim(), type: 'both', lookup: `song:${simpleTitle} artist:${simpleArtist}` },
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
+    });
+
+    let results = response.data.search;
+
+    // STRATEGY 2: Fallback to Title Only
+    if (!results || results.length === 0) {
+      console.log(`Fallback search for: "${simpleTitle}"`);
+      response = await axios.get(baseUrl, {
+        params: { api_key: apiKey.trim(), type: 'song', lookup: simpleTitle },
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
+      });
+      
+      const potentialMatches = response.data.search;
+      if (potentialMatches && potentialMatches.length > 0) {
+        const bestMatch = potentialMatches.find(track => isFuzzyMatch(track.artist.name, simpleArtist));
+        if (bestMatch) results = [bestMatch];
+      }
+    }
+
+    if (results && results.length > 0) {
+      res.json(results[0]);
+    } else {
+      res.json({ error: "Not found" });
+    }
+  } catch (error) {
+    console.error("API Error:", error.message);
+    res.json({ error: "API Error" });
   }
 });
 

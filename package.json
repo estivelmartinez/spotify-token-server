@@ -1,5 +1,5 @@
 {
-  "name": "spotify-token-server",
+  "name": "music-data-server",
   "version": "1.0.0",
   "main": "server.js",
   "scripts": {
@@ -8,8 +8,6 @@
   "dependencies": {
     "express": "^4.18.2",
     "cors": "^2.8.5",
-    "node-fetch": "^2.6.9",
-    "axios": "^1.6.0",
-    "cheerio": "^1.0.0"
+    "axios": "^1.6.0"
   }
 }

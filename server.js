@@ -6,27 +6,38 @@ const app = express();
 
 app.use(cors());
 
-// --- HELPER 1: Remove "feat.", "&", "with" from Artist ---
-// Input: "Drake feat. 21 Savage" -> Output: "Drake"
+// --- HELPERS ---
+
+// 1. Remove features: "Drake feat. Future" -> "Drake"
 function cleanArtist(artist) {
   if (!artist) return "";
   return artist.split(/\s+(feat\.?|featuring|&|x|with|vs\.?)\s+/i)[0].trim();
 }
 
-// --- HELPER 2: Remove "(...)" and "[...]" from Title ---
-// Input: "All Too Well (10 Minute Version)" -> Output: "All Too Well"
+// 2. Remove extra info: "Song (Live)" -> "Song"
 function cleanTitle(title) {
   if (!title) return "";
-  // Removes text in parentheses or brackets
   return title.replace(/\s*[\(\[].*?[\)\]]/g, '').trim();
 }
 
-// 1. Home Page
+// 3. Remove punctuation: "P!nk" -> "Pnk", "S.O.S." -> "SOS"
+function stripPunctuation(str) {
+  return str.replace(/[.,\/#!$%\^&\*;:{}=\-_`~()]/g,"").replace(/\s{2,}/g," ");
+}
+
+// Check if two strings match loosely (ignoring case/punctuation)
+function isFuzzyMatch(str1, str2) {
+  const s1 = stripPunctuation(str1.toLowerCase());
+  const s2 = stripPunctuation(str2.toLowerCase());
+  return s1.includes(s2) || s2.includes(s1);
+}
+
+// --- ROUTES ---
+
 app.get("/", (req, res) => {
-  res.send('<h1>Smart Music API</h1><p>Powered by <a href="https://getsongbpm.com">GetSongBPM</a></p>');
+  res.send('<h1>Music Data API</h1><p>Powered by <a href="https://getsongbpm.com">GetSongBPM</a></p>');
 });
 
-// 2. Spotify Token Endpoint (Keep this)
 app.get("/token", async (req, res) => {
   const authString = Buffer.from(process.env.SPOTIFY_ID + ":" + process.env.SPOTIFY_SECRET).toString("base64");
   try {
@@ -45,7 +56,7 @@ app.get("/token", async (req, res) => {
   }
 });
 
-// 3. GetSongBPM Endpoint (UPDATED WITH SMART LOGIC)
+// --- SMART BPM SEARCH ---
 app.get("/bpm", async (req, res) => {
   const { artist, title } = req.query;
   const apiKey = process.env.GETSONGBPM_KEY;
@@ -56,63 +67,69 @@ app.get("/bpm", async (req, res) => {
   try {
     const baseUrl = `https://api.getsong.co/search/`;
     
-    // 🧠 STRATEGY 1: Try Clean Title + Clean Artist
+    // Clean inputs
     const simpleTitle = cleanTitle(title);
     const simpleArtist = cleanArtist(artist);
     
-    // Log what we are actually searching for (check Render logs to see this!)
-    console.log(`Searching: "${simpleTitle}" by "${simpleArtist}"`);
+    // Log for debugging
+    console.log(`🔍 Searching: Title="${simpleTitle}" | Artist="${simpleArtist}"`);
 
-    const lookupQuery = `song:${simpleTitle} artist:${simpleArtist}`;
-
+    // STRATEGY 1: Strict Search (Best Accuracy)
     let response = await axios.get(baseUrl, {
-      params: { api_key: apiKey.trim(), type: 'both', lookup: lookupQuery },
+      params: { 
+        api_key: apiKey.trim(), 
+        type: 'both', 
+        lookup: `song:${simpleTitle} artist:${simpleArtist}` 
+      },
       headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
     });
 
     let results = response.data.search;
 
-    // 🧠 STRATEGY 2: Fallback (Title Only)
-    // If exact match failed, search JUST the title and look for the artist manually
+    // STRATEGY 2: Fallback (Title Search + Fuzzy Artist Check)
     if (!results || results.length === 0) {
-      console.log(`Strict search failed. Trying title only: "${simpleTitle}"`);
+      console.log(`   ⚠️ Strict match failed. Trying Title-only search...`);
       
       response = await axios.get(baseUrl, {
-        params: { api_key: apiKey.trim(), type: 'song', lookup: simpleTitle },
+        params: { 
+            api_key: apiKey.trim(), 
+            type: 'song', 
+            lookup: simpleTitle 
+        },
         headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
       });
       
       const potentialMatches = response.data.search;
       
       if (potentialMatches && potentialMatches.length > 0) {
-        // Filter results to find one where the artist matches loosely
-        // e.g. If we found "Cruel Summer" by "Bananarama" and "Taylor Swift", pick Taylor.
+        // Find first result where artist name looks similar
         const bestMatch = potentialMatches.find(track => 
-          track.artist.name.toLowerCase().includes(simpleArtist.toLowerCase()) ||
-          simpleArtist.toLowerCase().includes(track.artist.name.toLowerCase())
+          isFuzzyMatch(track.artist.name, simpleArtist)
         );
         
-        if (bestMatch) results = [bestMatch];
+        if (bestMatch) {
+            console.log(`   ✅ Fuzzy Match Found: "${bestMatch.song_title}" by "${bestMatch.artist.name}"`);
+            results = [bestMatch];
+        }
       }
     }
 
-    // Return the result
+    // Return Result
     if (results && results.length > 0) {
       const topMatch = results[0];
       res.json({
         bpm: topMatch.tempo,
         key: topMatch.key_of,
         title: topMatch.song_title,
-        artist: topMatch.artist.name,
-        original_query: `${title} by ${artist}`,
-        found_as: `${topMatch.song_title} by ${topMatch.artist.name}`
+        artist: topMatch.artist.name
       });
     } else {
-      res.json({ bpm: null, key: null, error: "Song not found in database" });
+      console.log(`   ❌ Failed to find song in database.`);
+      res.json({ bpm: null, key: null, error: "Song not found" });
     }
 
   } catch (error) {
-    console.error("GetSongBPM Error:", error.message);
+    console.error("API Error:", error.message);
     if (error.response) {
       res.json({ bpm: null, key: null, error: `API Error: ${error.response.status}` });
     } else {
